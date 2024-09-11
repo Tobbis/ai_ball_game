@@ -1,0 +1,6 @@
+torch==2.4.1
+torchvision==0.19.1
+gym==0.26.2
+numpy==1.24.4
+pygame==2.6.0
+gprof2dot==2024.6.6
