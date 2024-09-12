@@ -60,6 +60,7 @@ def draw_button(screen, btn):  # x, y, width, height, color, text):
 def getDistanceToObstacle(ball, square):
     return abs(square.x - ball.x)
 
+
 state_size = 3  # ball.x, ball.speed, square.x
 action_size = 2  # Jump or no jump
 
@@ -136,9 +137,17 @@ def select_best_agents(population, fitness_scores, num_best):
 
 
 def evolve(lvl_config):
+    print("Starting evolution... max generation:", generations)
     population = [
         EvolvableAgent(state_size, action_size) for _ in range(population_size)
     ]
+
+    # remove all old files in evo_training directory
+    files = glob.glob("evo_training/*")
+    for f in files:
+        os.remove(f)
+
+    dict_score = {}
 
     for generation in range(generations):
         fitness_scores = [evaluate_agent(agent, lvl_config) for agent in population]
@@ -160,18 +169,21 @@ def evolve(lvl_config):
 
         best_agent = best_agents[0]
         best_score = max(fitness_scores)
-        if generation % 5 == 0:
-            print(f"Generation {generation}: Best Score = {best_score}")
+        if best_score not in dict_score:
+            dict_score[best_score] = 1
+            print(
+                f"Generation {generation}: Best Score = {best_score} (new high score)"
+            )
             # store the best agent in a file in evo_training directory
             torch.save(
-                best_agent.model, f"evo_training/best_agent_gen_{generation}.pth"
+                best_agent.model.state_dict(),
+                f"evo_training/best_agent_gen_{generation}_{best_score}.pth",
             )
+        else:
+            if generation % 5 == 0:
+                print(f"Generation {generation}: Best Score = {best_score}")
 
         if best_score >= max_score:
-            print(f"Max score {best_score} reached in generation {generation}")
-            torch.save(
-                best_agent.model, f"evo_training/best_agent_gen_{generation}_final.pth"
-            )
             break
 
     return best_agent
@@ -188,11 +200,18 @@ def find_best_agent_from_file(folder_path):
     Returns:
     list: A list of file paths.
     """
-    # Create a pattern to match all files with the specified prefix
-    file_pattern = os.path.join(folder_path, f"*final.pth")
-    file_paths = glob.glob(file_pattern)
+    # find the last file in the folder
+    files = glob.glob(f"{folder_path}/*")
+    if len(files) == 0:
+        return None
+    files.sort(key=os.path.getmtime)
+    file_path = [files[-1]][0]
 
-    return file_paths
+    # Create a pattern to match all files with the specified prefix
+
+    # file_pattern = os.path.join(folder_path, f"*final.pth")
+    # file_paths = glob.glob(file_pattern)
+    return file_path
 
 
 def load_best_agent(file_path):
@@ -205,7 +224,10 @@ def load_best_agent(file_path):
     Returns:
     EvolvableAgent: The best agent loaded from the file.
     """
-    return torch.load(file_path)
+
+    agent = EvolvableAgent(state_size, action_size)
+    agent.model.load_state_dict(torch.load(file_path, weights_only=True))
+    return agent
 
 
 def load_level_config():
@@ -351,6 +373,34 @@ def createLevel(lvlConfig):
 #     pygame.display.flip()
 
 
+def getAllDifferentAgents():
+    # get all agents from the evo_training directory
+    files = glob.glob("evo_training/*")
+    uniqueAgents = []
+    dict_scores = {}
+
+    for f in files:
+        # get the file name, not path
+        name = os.path.basename(f)
+        # split the file name by "_"
+        parts = name.split("_")
+        # the last part is the score (remove the .pth)
+        score = int(parts[-1].split(".")[0])
+        if score in dict_scores:
+            continue
+        dict_scores[score] = 1
+        # the second last part is the generation
+        generation = int(parts[-2])
+        agent = EvolvableAgent(state_size, action_size)
+        agent.model.load_state_dict(torch.load(f, weights_only=True))
+
+        # add the agent to the list
+        uniqueAgents.append((score, generation, agent))
+    # sort the agents by score, with the lowest number first
+    uniqueAgents.sort(key=lambda x: x[0])
+    return uniqueAgents
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Choose whether to load model from file or not."
@@ -360,7 +410,6 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     loadFromFile = args.load
-    print(f"Load best model from file: {loadFromFile}")
 
     lvl_config = load_level_config()
     lvl_config = createLevel(lvl_config)
@@ -373,93 +422,110 @@ if __name__ == "__main__":
     # showLevel(lvl_config)
 
     if loadFromFile:
-        best_model_file_paths = find_best_agent_from_file("evo_training")
-        print(f"Best model file path: {best_model_file_paths[0]}")
-        best_model = load_best_agent(best_model_file_paths[0])
-        best_agent = EvolvableAgent(state_size, action_size)
-        best_agent.model = best_model
+        best_model_file_path = find_best_agent_from_file("evo_training")
+        if best_model_file_path is None:
+            print(
+                "No best model found in evo_training directory. Will evolve a new one."
+            )
+            best_agent = evolve(lvl_config)
     else:
         best_agent = evolve(lvl_config)
 
-    # use the best agent to play the game
-    ball = Ball(
-        radius=20,
-        speed=5,
-        gravity=1,
-        jump_strength=-15,
-        start_x=20,
-        start_y=GAME_HEIGHT - 20,
-        ground_y=GAME_HEIGHT,
-    )
+    allUniqueAgents = getAllDifferentAgents()
+    for agentTuple in allUniqueAgents:
+        score, generation, agent = agentTuple
 
-    square = Rectangle(size=50, x=lvl_config["square_x"], y=lvl_config["square_y"])
-    # square could be above ground level
-    square.falling = CheckIfSquareIsFalling(square)
+        # use the best agent to play the game
+        ball = Ball(
+            radius=20,
+            speed=5,
+            gravity=1,
+            jump_strength=-15,
+            start_x=20,
+            start_y=GAME_HEIGHT - 20,
+            ground_y=GAME_HEIGHT,
+        )
 
-    endButton = Button(width=150, height=50, x=10, y=10, color=GRAY, text="End Game")
+        square = Rectangle(size=50, x=lvl_config["square_x"], y=lvl_config["square_y"])
+        # square could be above ground level
+        square.falling = CheckIfSquareIsFalling(square)
+        endButton = Button(
+            width=150, height=50, x=10, y=10, color=GRAY, text="End Game"
+        )
 
-    done = False
-    score = 0
-    while not done:
-        state = np.array([ball.x, ball.speed, square.x])
-        action = best_agent.act(state)
+        # display text about the score and generation
+        font = pygame.font.Font(None, 36)
+        text = font.render(f"Score: {score}, Generation: {generation}", True, WHITE)
+        text_rect = text.get_rect(center=(WIDTH // 2, HEIGHT // 2))
 
-        if action == 1:
-            ball.jump(action)
-        ball.updatePosition()
-        ball.checkCollisionWithGround()
+        done = False
+        score = 0
+        while not done:
+            state = np.array([ball.x, ball.speed, square.x])
+            action = agent.act(state)
 
-        if ball.x + ball.radius >= WIDTH or ball.x - ball.radius <= 0:
-            ball.changeDirection()
-            score += 20
+            if action == 1:
+                ball.jump(action)
+            ball.updatePosition()
+            ball.checkCollisionWithGround()
 
-        if check_collision(ball, square):
-            score -= 100
-            done = True
+            if ball.x + ball.radius >= WIDTH or ball.x - ball.radius <= 0:
+                ball.changeDirection()
+                score += 20
 
-        # apply gravity to the square if it is not on the ground
-        square.applyGravity(gravity, GAME_HEIGHT)
+            if check_collision(ball, square):
+                score -= 100
+                done = True
 
-        score += 1
-        if done:
-            break
+            # apply gravity to the square if it is not on the ground
+            square.applyGravity(gravity, GAME_HEIGHT)
 
-        if score > 2000:  # Arbitrary large number to stop the game if it takes too long
-            break
+            score += 1
+            if done:
+                break
 
-        # check if endbutton is pressed
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
+            if (
+                score > 2000
+            ):  # Arbitrary large number to stop the game if it takes too long
+                break
 
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                mouse_x, mouse_y = event.pos
-                if (endButton.x <= mouse_x <= endButton.x + endButton.width) and (
-                    endButton.y <= mouse_y <= endButton.y + endButton.height
-                ):
-                    done = True
-                    break
+            # check if endbutton is pressed
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
 
-        # display the game
-        # Clear screen
-        screen.fill(BLACK)
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    mouse_x, mouse_y = event.pos
+                    if (endButton.x <= mouse_x <= endButton.x + endButton.width) and (
+                        endButton.y <= mouse_y <= endButton.y + endButton.height
+                    ):
+                        done = True
+                        break
 
-        draw_button(screen, endButton)
+            # display the game
+            # Clear screen
+            screen.fill(BLACK)
 
-        # Draw the empty field at the bottom
-        pygame.draw.rect(screen, GREEN, (0, GAME_HEIGHT, WIDTH, FIELD_HEIGHT))
+            draw_button(screen, endButton)
 
-        # Draw ball (within the game area)
-        pygame.draw.circle(screen, WHITE, (ball.x, ball.y), ball.radius)
+            # Draw the empty field at the bottom
+            pygame.draw.rect(screen, GREEN, (0, GAME_HEIGHT, WIDTH, FIELD_HEIGHT))
 
-        # Draw the square obstacle in the game area
-        pygame.draw.rect(screen, RED, (square.x, square.y, square.size, square.size))
+            # Draw ball (within the game area)
+            pygame.draw.circle(screen, WHITE, (ball.x, ball.y), ball.radius)
 
-        # Display score
-        display_score(screen, score)
+            # Draw the square obstacle in the game area
+            pygame.draw.rect(
+                screen, RED, (square.x, square.y, square.size, square.size)
+            )
 
-        # Update display
-        pygame.display.flip()
+            # Display score
+            display_score(screen, score)
 
-        # Cap the frame rate
-        pygame.time.Clock().tick(60)
+            screen.blit(text, text_rect)
+
+            # Update display
+            pygame.display.flip()
+
+            # Cap the frame rate
+            pygame.time.Clock().tick(60)
